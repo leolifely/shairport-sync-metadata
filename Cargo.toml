@@ -11,3 +11,4 @@ serde = { version = "1.0.203", features = ["derive"] }
 serde-xml-rs = "0.6.0"
 sdl2 = { version = "0.37.0", features = ["image", "ttf"] }
 image = "0.25.1"
+fltk = "1.4.32"

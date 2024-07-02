@@ -1,15 +1,12 @@
 mod metadata;
-extern crate sdl2;
 
-use sdl2::ttf;
-use sdl2::pixels::Color;
+use fltk::{app, image::RgbImage, prelude::*, text::TextDisplay, window::Window, frame::Frame};
 use std::io::{self, BufRead};
-use sdl2::render::TextureQuery;
 use base64::{engine::general_purpose, Engine as _};
 use image::load_from_memory;
-use sdl2::rect::Rect;
-use crate::DataTypes::Album;
-
+use std::sync::{Arc, Mutex};
+use std::thread;
+use fltk::enums::{Color, FrameType};
 
 enum DataTypes {
     Artist,
@@ -18,117 +15,133 @@ enum DataTypes {
     Genre,
 }
 
+struct SongData {
+    title: String,
+    artist: String,
+    album: String,
+    album_art: String,
+    old_album_art: String,
+    genre: String,
+}
+
 fn main() {
-    let sdl_context = sdl2::init().unwrap();
-    let ttf_context = ttf::init().unwrap();
+    let app = app::App::default();
+    let mut wind = Window::new(100, 100, 1024, 600, "Display");
+    wind.set_color(Color::from_hex(0));
 
-    let video_subsystem = sdl_context.video().unwrap();
+    let mut album_art_frame = Frame::new(50, 44, 512, 512, "");
+    let mut artist_display = TextDisplay::new(600, 300, 400, 50, "");
+    let mut title_display = TextDisplay::new(600, 250, 400, 50, "");
+    let mut album_display = TextDisplay::new(600, 350, 400, 50, "");
+    artist_display.set_color(Color::from_hex(0));
+    title_display.set_color(Color::from_hex(0));
+    album_display.set_color(Color::from_hex(0));
+    artist_display.set_frame(FrameType::NoBox);
+    title_display.set_frame(FrameType::NoBox);
+    album_display.set_frame(FrameType::NoBox);
 
-    let window = video_subsystem.window("display", 1024, 600)
-        .position_centered()
-        .build()
-        .unwrap();
 
-    let mut canvas = window.into_canvas().build().unwrap();
+    wind.end();
+    wind.show();
 
-    canvas.set_draw_color(Color::RGB(0, 0, 0));
-    canvas.clear();
-    canvas.present();
-
-    let stdin = io::stdin();
-    let handle = stdin.lock();
-    let mut buffer = String::new();
-
-    let mut data = metadata::SongData {
+    let data = Arc::new(Mutex::new(SongData {
         title: "".to_string(),
         artist: "".to_string(),
         album: "".to_string(),
         album_art: "".to_string(),
+        old_album_art: "".to_string(),
         genre: "".to_string(),
-    };
+    }));
 
-    for line in handle.lines() {
-        match line {
-            Ok(line) => {
-                buffer.push_str(&line);
-                if line.ends_with("</item>") {
-                    let new_data = metadata::process_xml(&buffer);
-                    if !new_data.genre.is_empty() {
-                        data.genre = new_data.genre;
-                    } else if !new_data.title.is_empty() {
-                        data.title = new_data.title;
-                    } else if !new_data.album.is_empty() {
-                        data.album = new_data.album;
-                    } else if !new_data.artist.is_empty() {
-                        data.artist = new_data.artist;
-                    } else if !new_data.album_art.is_empty() {
-                        data.album_art = new_data.album_art;
+    let data_clone = data.clone();
+    thread::spawn(move || {
+        let stdin = io::stdin();
+        let handle = stdin.lock();
+        let mut buffer = String::new();
+
+        for line in handle.lines() {
+            match line {
+                Ok(line) => {
+                    buffer.push_str(&line);
+                    if line.ends_with("</item>") {
+                        let new_data = metadata::process_xml(&buffer);
+                        {
+                            let mut data = data_clone.lock().unwrap();
+                            if !new_data.genre.is_empty() {
+                                data.genre = new_data.genre;
+                            } else if !new_data.title.is_empty() {
+                                data.title = new_data.title;
+                            } else if !new_data.album.is_empty() {
+                                data.album = new_data.album;
+                            } else if !new_data.artist.is_empty() {
+                                data.artist = new_data.artist;
+                            } else if !new_data.album_art.is_empty() {
+                                data.album_art = new_data.album_art;
+                            }
+                        }
+                        app::awake();
+                        buffer.clear();
                     }
-
-                    canvas.clear();
-                    draw_album_art(&data, &mut canvas);
-                    draw_data(&data, &mut canvas, &ttf_context, 1024, 600, DataTypes::Artist);
-                    draw_data(&data, &mut canvas, &ttf_context, 1024, 600, DataTypes::Title);
-                    draw_data(&data, &mut canvas, &ttf_context, 1024, 600, Album);
-                    canvas.present();
-                    buffer.clear();
                 }
+                Err(e) => eprintln!("Error reading from stdin: {:?}", e),
             }
-            Err(e) => eprintln!("Error reading from stdin: {:?}", e),
         }
-    }
+    });
+
+    app::add_idle3(move |_| {
+        let mut data = data.lock().unwrap();
+        update_display(&data, &mut album_art_frame, &mut artist_display, &mut title_display, &mut album_display);
+        data.old_album_art = data.album_art.clone();
+    });
+
+    app.run().unwrap();
 }
 
-fn draw_album_art(data: &metadata::SongData, canvas: &mut sdl2::render::Canvas<sdl2::video::Window>) {
-    let base64_data = &data.album_art; // Assume `data.album_art` contains the base64-encoded album art
+fn update_display(data: &SongData, album_art_frame: &mut Frame, artist_display: &mut TextDisplay, title_display: &mut TextDisplay, album_display: &mut TextDisplay) {
+    if data.old_album_art != data.album_art {
+        draw_album_art(data, album_art_frame);
+    }
+    draw_data(data, artist_display, DataTypes::Artist);
+    draw_data(data, title_display, DataTypes::Title);
+    draw_data(data, album_display, DataTypes::Album);
+}
+
+fn draw_album_art(data: &SongData, frame: &mut Frame) {
+    let base64_data = &data.album_art;
 
     if !base64_data.is_empty() {
-        let decoded_data = general_purpose::STANDARD.decode(base64_data).unwrap();
-        let img = load_from_memory(&decoded_data).unwrap();
+        match general_purpose::STANDARD.decode(base64_data) {
+            Ok(decoded_data) => {
+                match load_from_memory(&decoded_data) {
+                    Ok(img) => {
+                        let img_buffer = img.to_rgba8().into_vec();
+                        let width = img.width() as i32;
+                        let height = img.height() as i32;
 
-        let texture_creator = canvas.texture_creator();
-
-        // Convert the image to an SDL2 surface with a mutable buffer
-        let mut img_buffer = img.to_rgba8().into_vec();
-        let width = img.width();
-        let height = img.height();
-        let surface = sdl2::surface::Surface::from_data(
-            &mut img_buffer,
-            width,
-            height,
-            4 * width,
-            sdl2::pixels::PixelFormatEnum::RGBA32
-        ).unwrap();
-
-        let texture = texture_creator.create_texture_from_surface(&surface).unwrap();
-        let TextureQuery { width, height, .. } = texture.query();
-
-        let position_x = 50; // Left of the screen
-        let position_y = 44; // Top margin
-
-        let target = Rect::new(position_x, position_y, width, height);
-        if let Err(e) = canvas.copy(&texture, None, Some(target)) {
-            eprintln!("Could not copy texture to canvas: {}", e);
+                        match RgbImage::new(&img_buffer, width, height, fltk::enums::ColorDepth::Rgba8) {
+                            Ok(mut image) => {
+                                if width > 512 || height > 512 {
+                                    // Resize the image to fit within the frame if necessary
+                                    image.scale(512, 512, true, true);
+                                }
+                                frame.set_image(Some(image));
+                                frame.redraw(); // Explicitly redraw the frame
+                                println!("Album art set successfully");
+                            }
+                            Err(e) => eprintln!("Error creating RgbImage: {:?}", e),
+                        }
+                    }
+                    Err(e) => eprintln!("Error loading image from memory: {:?}", e),
+                }
+            }
+            Err(e) => eprintln!("Error decoding base64 album art: {:?}", e),
         }
+    } else {
+        println!("No album art to display");
     }
 }
 
-fn draw_data(
-    data: &metadata::SongData,
-    canvas: &mut sdl2::render::Canvas<sdl2::video::Window>,
-    ttf_context: &ttf::Sdl2TtfContext,
-    window_width: i32,
-    window_height: i32,
-    data_type: DataTypes
-) {
-    let base_font_size: u16 = match data_type {
-        DataTypes::Title => 64,
-        DataTypes::Album => 64,
-        DataTypes::Artist => 64,
-        _ => 24,
-    };
-
-
+fn draw_data(data: &SongData, display: &mut TextDisplay, data_type: DataTypes) {
     let text = match data_type {
         DataTypes::Title => &data.title,
         DataTypes::Album => &data.album,
@@ -143,49 +156,11 @@ fn draw_data(
             text.clone()
         };
 
-        let image_width = 512;
-        let margin = 50;
-        let max_width = (window_width - image_width - 3 * margin) as u32;
+        let mut buffer = fltk::text::TextBuffer::default();
+        buffer.set_text(&truncated_text);
 
-        let mut font_size = base_font_size;
-        let font_raw = include_bytes!("Roboto-Medium.ttf");
-
-        loop {
-            let font = ttf_context.load_font_from_rwops(sdl2::rwops::RWops::from_bytes(font_raw).unwrap(), font_size).unwrap();
-            let surface = font.render(&truncated_text).blended(Color::RGB(255, 255, 255)).unwrap();
-            let texture_creator = canvas.texture_creator();
-            let texture = texture_creator.create_texture_from_surface(&surface).unwrap();
-            let TextureQuery { width, .. } = texture.query();
-
-            if width <= max_width {
-                break;
-            }
-
-            if font_size == 1 {
-                break;
-            }
-
-            font_size -= 1;
-        }
-
-        let font = ttf_context.load_font_from_rwops(sdl2::rwops::RWops::from_bytes(font_raw).unwrap(), font_size).unwrap();
-        let surface = font.render(&truncated_text).blended(Color::RGB(255, 255, 255)).unwrap();
-        let texture_creator = canvas.texture_creator();
-        let texture = texture_creator.create_texture_from_surface(&surface).unwrap();
-        let TextureQuery { width, height, .. } = texture.query();
-
-        let position_x = window_width - margin - width as i32;
-        let position_y = match data_type {
-            DataTypes::Title => window_height / 2 - 100,
-            DataTypes::Album => window_height / 2,
-            DataTypes::Artist => window_height / 2 + 100,
-            _ => 5
-        };
-
-        let target = Rect::new(position_x, position_y, width, height);
-
-        if let Err(e) = canvas.copy(&texture, None, Some(target)) {
-            eprintln!("Could not copy texture to canvas: {}", e);
-        }
+        display.set_text_color(Color::rgb_color(255, 255, 255));
+        display.set_buffer(Some(buffer));
+        display.redraw(); // Explicitly redraw the display
     }
 }
