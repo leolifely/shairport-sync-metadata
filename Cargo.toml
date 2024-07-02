@@ -1,0 +1,13 @@
+[package]
+name = "airplay_metadata_display"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+regex = "1.10.5"
+quick-xml = "0.33.0"
+base64 = "0.22.1"
+serde = { version = "1.0.203", features = ["derive"] }
+serde-xml-rs = "0.6.0"
+sdl2 = { version = "0.37.0", features = ["image", "ttf"] }
+image = "0.25.1"
